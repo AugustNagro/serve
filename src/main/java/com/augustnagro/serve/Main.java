@@ -64,7 +64,7 @@ public class Main {
             // open the browser to localhost, if supported.
             // todo: how to close implicit AWT EventLoop? I noticed persistent AWT threads in VisualVM
             // after calling .getDesktop()
-            if (Files.exists(Paths.get("index.html"))
+            if (Files.exists(indexHtmlPath)
                     && Desktop.isDesktopSupported()
                     && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE))
                 Desktop.getDesktop().browse(URI.create("http://localhost:" + port));
@@ -165,15 +165,15 @@ public class Main {
                 if (servingIndexHtml) {
                     // lets try to find the body tag
                     try (FileChannel fc = FileChannel.open(res)) {
+                        // the index after the body tag
                         long afterBodyTag = 0;
                         // The index.html might be bigger than the buffer, so we
                         // load in iterations, taking care of the split case
                         // ie, buffer1 = ...<bo
                         // and buffer2 = dy>...
                         while (fc.position() < fc.size()) {
-                            // read as much of the file as possible into the buffer,
-                            // and decode the UTF-8 buffer into UTF-16 charBuffer
                             long lastPos = fc.position();
+                            // read as much of the file as possible into the buffer,
                             buffer.clear();
                             fc.read(buffer);
                             buffer.flip();
