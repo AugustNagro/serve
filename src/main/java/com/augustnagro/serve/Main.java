@@ -9,6 +9,7 @@ import java.nio.CharBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CharsetEncoder;
 import java.nio.file.Files;
@@ -19,8 +20,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME;
@@ -34,31 +33,27 @@ public class Main {
     static final byte[] INIT_MSG   = encodeWSMsg("init");
     static final byte[] RELOAD_MSG = encodeWSMsg("reloadplz");
 
-    private static final String ENCODED_JS = "\n<script>\n" +
-            "(function() {\n" +
-            "    var websocket = new WebSocket('ws://localhost:8080/_serveWebsocket');\n" +
-            "    websocket.onmessage = function(e) {\n" +
-            "        if (e.data !== 'init') location.reload();\n" +
-            "    };\n" +
+    private static final String JS = "<script>" +
+            "(function() {" +
+            "var websocket=new WebSocket('ws://localhost:8080/_serveWebsocket');" +
+            "websocket.onmessage=function(e){" +
+            "if (e.data!=='init')location.reload();" +
+            "};" +
             "})();" +
-            "</script>\n";
+            "</script>";
 
-    private static final int     BODY_TAG_LONGEST_PARTIAL_LEN = "<body".length();
-    private static final Pattern REQ_PATTERN                  = Pattern.compile("GET (?<req>\\S+)");
-    private static final Pattern WS_KEY                       = Pattern.compile("Sec-WebSocket-Key: (?<key>.*)");
-    private static final int     BUFFER_SIZE                  = 250000;
+    private static final String  BODY_TAG     = "<body>";
+    private static final int     BODY_TAG_LEN = BODY_TAG.length();
+    private static final int     BUFFER_SIZE  = 250000;
 
     private final ByteBuffer                           buffer        = ByteBuffer.allocateDirect(BUFFER_SIZE);
-    // buffer can be UTF-8, so charBuffer (UTF-16) must be 2x size
-    private final CharBuffer                           charBuffer    = CharBuffer.allocate(BUFFER_SIZE);
     private final ConcurrentLinkedQueue<SocketChannel> webSockets    = new ConcurrentLinkedQueue<>();
-    private final Matcher                              getReqMatcher = REQ_PATTERN.matcher("");
-    private final Matcher                              wsKeyMatcher  = WS_KEY.matcher("");
     private final ByteBuffer                           initMsgBuffer = ByteBuffer.wrap(INIT_MSG);
+    private final Path                                 indexHtmlPath = Paths.get("index.html");
     private final CharsetEncoder                       utf8Encoder   = UTF_8.newEncoder();
     private final CharsetDecoder                       utf8Decoder   = UTF_8.newDecoder();
 
-    private final ByteBuffer encodedJsBuf = UTF_8.encode(ENCODED_JS);
+    private final ByteBuffer encodedJsBuf = UTF_8.encode(JS);
 
     private void startServer(int port) {
         new Thread(new FileWatcher(webSockets)).start();
@@ -86,34 +81,32 @@ public class Main {
                 buffer.clear();
                 sc.read(buffer);
                 buffer.flip();
-                decodeBufToCharBuf();
 
-                // parse the header for get request
-                if (!getReqMatcher.reset(charBuffer).find()) {
+                // the resource requested, ie `/home` or `/css/styles.css`
+                String req = getInbetween("GET ", " ");
+
+                if (req == null) {
                     sc.close();
                     System.err.println("Malformed Request.. could not find GET header");
                     continue;
                 }
 
-                // the resource requested, ie `/home` or `/css/styles.css`
-                String req = getReqMatcher.group("req");
-
                 // If the request is for `/`, serve index.html
                 if (req.equals("/")) {
-                    res = Paths.get("index.html");
+                    res = indexHtmlPath;
 
                 } else if (req.equals("/_serveWebsocket")) {
                     // we search the header for WebSocket Key,
                     // perform the protocol switch, and send
                     // an init message.
-                    if (!wsKeyMatcher.reset(charBuffer).find()) {
+                    String wsKey = getInbetween("Sec-WebSocket-Key: ", "\r\n");
+                    if (wsKey == null) {
                         sc.close();
                         System.err.println("Could not find websocket key");
                         continue;
                     }
 
                     // Building the WS Upgrade Header
-                    String wsKey = wsKeyMatcher.group("key");
                     byte[] digest = (wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(UTF_8);
                     String resp = "HTTP/1.1 101 Switching Protocols\r\n" +
                             "Connection: Upgrade\r\n" +
@@ -138,24 +131,27 @@ public class Main {
                 } else if (req.endsWith("/")) {
                     res = Paths.get(req.substring(1) + "index.html");
 
-                } else if (!req.contains(".") && Files.exists(Paths.get(req.substring(1) + "/index.html"))) {
+                    // could be index.html in another directory
+                } else if (!req.contains(".")) {
                     res = Paths.get(req.substring(1) + "/index.html");
 
                     // Otherwise, we're requesting resource like `/styles.css`
-                } else if (Files.exists((res = Paths.get(req.substring(1))))) {
-                    servingIndexHtml = false;
-
-                    // if we can't find resource, it might be a SPA.. so try
-                    // to serve index html
-                } else if (Files.exists(Paths.get("index.html"))) {
-                    System.out.println("Could not find ." + req + ", serving index.html");
-                    res = Paths.get("index.html");
                 } else {
-                    System.err.println("No such file: " + res);
-                    encodeBuf("HTTP/1.0 404 Not Found\r\n");
-                    while (buffer.hasRemaining()) sc.write(buffer);
-                    sc.close();
-                    continue;
+                    servingIndexHtml = false;
+                    res = Paths.get(req.substring(1));
+                }
+
+                if (Files.notExists(res)) {
+                    // might be SPA, so try index.html
+                    if (Files.exists(indexHtmlPath)) {
+                        res = indexHtmlPath;
+                    } else {
+                        System.err.println("No such file: " + res);
+                        encodeBuf("HTTP/1.0 404 Not Found\r\n");
+                        while (buffer.hasRemaining()) sc.write(buffer);
+                        sc.close();
+                        continue;
+                    }
                 }
 
                 // build the response header
@@ -169,40 +165,33 @@ public class Main {
                 if (servingIndexHtml) {
                     // lets try to find the body tag
                     try (FileChannel fc = FileChannel.open(res)) {
-                        // the index of the byte after at the end of `<body>`
                         long afterBodyTag = 0;
-
-                        // todo: think about replacing brute force with something
-                        // like Rabin-Karp or Boyer-Moore... but since there's no repeats
-                        // will this even help us?
-
                         // The index.html might be bigger than the buffer, so we
                         // load in iterations, taking care of the split case
                         // ie, buffer1 = ...<bo
                         // and buffer2 = dy>...
-                        search:
                         while (fc.position() < fc.size()) {
+                            // read as much of the file as possible into the buffer,
+                            // and decode the UTF-8 buffer into UTF-16 charBuffer
+                            long lastPos = fc.position();
                             buffer.clear();
                             fc.read(buffer);
                             buffer.flip();
-                            decodeBufToCharBuf();
 
-                            if (charBuffer.limit() <= BODY_TAG_LONGEST_PARTIAL_LEN) break;
-                            final int searchLimit = charBuffer.limit() - BODY_TAG_LONGEST_PARTIAL_LEN;
-                            while (charBuffer.position() < searchLimit) {
-                                if (charBuffer.get() == '<'
-                                        && charBuffer.get() == 'b'
-                                        && charBuffer.get() == 'o'
-                                        && charBuffer.get() == 'd'
-                                        && charBuffer.get() == 'y'
-                                        && charBuffer.get() == '>') {
-                                    afterBodyTag = fc.position();
-                                    break search;
-                                }
+                            // if there's less than or equal to "<body>".length() chars, then we may exit
+                            // since we're looking for the position after this search string.
+                            if (buffer.limit() <= BODY_TAG_LEN) break;
+
+                            int bodyPosInBuffer = findInBuffer(BODY_TAG);
+                            if (bodyPosInBuffer > 0) {
+                                afterBodyTag = lastPos + bodyPosInBuffer;
+                                break;
                             }
 
-                            fc.position(fc.position() - BODY_TAG_LONGEST_PARTIAL_LEN);
+                            fc.position(fc.position() - BODY_TAG_LEN);
                         }
+                        // reset file pos
+                        fc.position(0);
 
                         // we could not find body tag.. just transfer the file
                         if (afterBodyTag == 0) {
@@ -263,8 +252,47 @@ public class Main {
     }
 
     /**
-     * Encodes the UTF-16 String to UTF-8, placing bytes in buffer,
-     * and flips buffer when done.
+     * searches for a given String in the UTF-8 buffer.
+     * Returns the advanced buffer position on success,
+     * or -1 on failure.
+     * <p>
+     * todo: consider adding skips
+     */
+    private int findInBuffer(String s) {
+        byte[] search = s.getBytes(UTF_8);
+        search:
+        while (buffer.position() < buffer.limit() - search.length) {
+            for (byte b : search) if (buffer.get() != b) continue search;
+            return buffer.position();
+        }
+        return -1;
+    }
+
+    /**
+     * Extracts a header value given the key (ex, "GET ") from
+     * start until end.
+     * Returns the String value on success,
+     * or null on failure. Bytebuffer is advanced.
+     */
+    private String getInbetween(String start, String end) throws CharacterCodingException {
+        int startI = findInBuffer(start);
+        if (startI < 0) return null;
+        int endI = findInBuffer(end) - end.length();
+        if (endI < 0) return null;
+
+        // Wish I had Java 13 ByteBuffer.slice
+        int lim = buffer.limit();
+        buffer.position(startI);
+        buffer.limit(endI);
+        String res = decodeBuf(buffer);
+        buffer.limit(lim);
+        buffer.position(endI);
+        return res;
+    }
+
+    /**
+     * Encode the UTF-16 String to UTF-8 Buffer.
+     * Flips buffer when done, so position = 0.
      */
     private void encodeBuf(String s) {
         buffer.clear();
@@ -274,17 +302,10 @@ public class Main {
         buffer.flip();
     }
 
-    /**
-     * Decodes UTF-8 buffer to UTF-16, putting result in charBuffer,
-     * and flips buffer and charBuffer when done.
-     */
-    private void decodeBufToCharBuf() {
-        charBuffer.clear();
-        utf8Decoder.reset();
-        utf8Decoder.decode(buffer, charBuffer, true);
-        utf8Decoder.flush(charBuffer);
-        buffer.flip();
-        charBuffer.flip();
+    private String decodeBuf(ByteBuffer bb) throws CharacterCodingException {
+        String res = utf8Decoder.decode(bb).toString();
+        bb.flip();
+        return res;
     }
 
     /**
