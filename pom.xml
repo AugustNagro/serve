@@ -13,8 +13,6 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.target>1.8</maven.compiler.target>
         <maven.compiler.source>1.8</maven.compiler.source>
-
-        <exec.mainClass>com.augustnagro.serve.Main</exec.mainClass>
     </properties>
 
     <build>
@@ -25,7 +23,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.augustnagro.serve.Main</mainClass>
+                            <mainClass>com.augustnagro.serve.NewMain</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

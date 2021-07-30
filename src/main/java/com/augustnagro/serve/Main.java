@@ -25,10 +25,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME;
 
 public class Main {
-    public static void main(String... args) {
-        int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
-        new Main().startServer(port);
-    }
+//    public static void main(String... args) {
+//        int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
+//        new Main().startServer(port);
+//    }
 
     static final byte[] INIT_MSG   = encodeWSMsg("init");
     static final byte[] RELOAD_MSG = encodeWSMsg("reloadplz");
