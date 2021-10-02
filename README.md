@@ -17,7 +17,7 @@ Serve is a simple executable jar... run however you'd like. I recommend:
 java -Xmx3m -XX:+UseSerialGC -jar serve.jar
 ```
 
-To use port other than `8080`:
+To use port other than `8085`:
 ```shell script
 java -jar serve.jar <port>
 ```
